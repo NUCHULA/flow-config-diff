@@ -206,6 +206,68 @@
     border-top: 1px solid var(--border);
   }
 
+  /* View toggle */
+  .view-toggle { display: none; gap: 0.5rem; margin-bottom: 1rem; }
+  .view-toggle.visible { display: flex; }
+  .view-btn {
+    background: var(--bg2); border: 1px solid var(--border); color: var(--text2);
+    padding: 0.4rem 1rem; border-radius: 6px; font-size: 0.8rem;
+    cursor: pointer; transition: all 0.15s; font-family: var(--font);
+  }
+  .view-btn:hover { border-color: var(--accent); color: var(--text); }
+  .view-btn.active { background: var(--purple); color: #fff; border-color: var(--purple); font-weight: 600; }
+
+  /* Group card */
+  .group-card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+    margin-bottom: 1rem; border-left: 3px solid var(--purple); overflow: hidden;
+  }
+  .group-card > summary {
+    padding: 0.85rem 1.25rem; cursor: pointer; display: flex;
+    align-items: center; gap: 0.75rem; font-size: 0.9rem;
+    list-style: none; user-select: none;
+  }
+  .group-card > summary::-webkit-details-marker { display: none; }
+  .group-card > summary .arrow {
+    color: var(--text3); font-size: 0.85rem; transition: transform 0.15s;
+    flex-shrink: 0; display: inline-block;
+  }
+  .group-card[open] > summary .arrow { transform: rotate(90deg); }
+  .group-card > summary .group-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .group-card > summary .group-meta {
+    font-family: var(--mono); font-size: 0.72rem; color: var(--text3); flex-shrink: 0;
+  }
+  .group-card > summary .group-count {
+    font-size: 0.7rem; background: var(--bg3); padding: 0.15rem 0.55rem;
+    border-radius: 4px; color: var(--yellow); flex-shrink: 0;
+  }
+  .group-body { padding: 0 1rem 1rem; }
+  .group-member {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    margin-top: 0.5rem; overflow: hidden;
+  }
+  .group-member summary {
+    padding: 0.6rem 1rem; cursor: pointer; display: flex;
+    align-items: center; gap: 0.6rem; font-size: 0.82rem;
+    list-style: none; user-select: none;
+  }
+  .group-member summary::-webkit-details-marker { display: none; }
+  .group-member summary .arrow {
+    color: var(--text3); font-size: 0.75rem; transition: transform 0.15s;
+    flex-shrink: 0; display: inline-block;
+  }
+  .group-member[open] summary .arrow { transform: rotate(90deg); }
+  .group-member .member-body { padding: 0 1rem 0.75rem; }
+  .group-unchanged {
+    font-size: 0.78rem; color: var(--text3); padding: 0.4rem 1rem;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    margin-top: 0.5rem; font-style: italic;
+  }
+  .group-connector {
+    font-size: 0.7rem; color: var(--text3); padding: 0.3rem 0 0.1rem;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
   /* Responsive */
   @media (max-width: 768px) {
     .upload-row { grid-template-columns: 1fr; }
@@ -258,7 +320,7 @@
     .header { background: #fff; border-bottom: 2px solid #0369a1; }
     .header h1 span { color: #0369a1; }
     .header .badge { background: #e0f2fe; color: #0369a1; }
-    .upload-row, .compare-row, .filter-tabs, .toast { display: none !important; }
+    .upload-row, .compare-row, .filter-tabs, .toast, .view-toggle { display: none !important; }
     .summary-actions { display: none !important; }
     .container { max-width: 100%; padding: 0 1rem; }
     .summary-bar { display: block !important; border: 1px solid #cbd5e1; }
@@ -345,9 +407,15 @@
     </div>
   </div>
 
+  <div class="view-toggle" id="view-toggle">
+    <button class="view-btn active" data-view="category">Category View</button>
+    <button class="view-btn" data-view="grouped">Grouped View</button>
+  </div>
+
   <div class="filter-tabs" id="filter-tabs"></div>
 
   <div class="results" id="results"></div>
+  <div class="results" id="results-grouped"></div>
 
   <div class="type-breakdown" id="type-breakdown">
     <h3>Node Type Distribution</h3>
@@ -697,13 +765,93 @@
       }
     }
 
+    // Build AI → Doc connection groups for grouped view
+    var AI_GROUP_TYPES = {model:1, intentAI:1, queryRewriter:1, advancedRouter:1, agent:1, orchestrator:1, smartIntent:1};
+    var DOC_GROUP_TYPES = {documents:1, products:1};
+
+    // Map after-node IDs to raw (non-deduped) change entries
+    var afterIdToRaw = {};
+    for (var ri = 0; ri < allChanges.length; ri++) {
+      if (allChanges[ri].after) afterIdToRaw[allChanges[ri].after.id] = allChanges[ri];
+    }
+
+    // Map after-node IDs for added nodes
+    var addedMap = {};
+    for (var rai = 0; rai < result.added.length; rai++) {
+      addedMap[result.added[rai].id] = result.added[rai];
+    }
+
+    // Build nodeB lookup
+    var nodesBById = {};
+    for (var nbi = 0; nbi < nodesB.length; nbi++) nodesBById[nodesB[nbi].id] = nodesB[nbi];
+
+    var groups = [];
+    var groupedAfterIds = {};
+
+    for (var gni = 0; gni < nodesB.length; gni++) {
+      var aiN = nodesB[gni];
+      if (!AI_GROUP_TYPES[aiN.nodeType]) continue;
+
+      var connDocs = [];
+      var aiTargets = aiN.targets || [];
+      for (var gti = 0; gti < aiTargets.length; gti++) {
+        var tgtNode = nodesBById[aiTargets[gti].nodeId];
+        if (tgtNode && DOC_GROUP_TYPES[tgtNode.nodeType]) connDocs.push(tgtNode);
+      }
+      if (connDocs.length === 0) continue;
+
+      var aiChange = afterIdToRaw[aiN.id] || null;
+      var docEntries = [];
+      for (var gdi = 0; gdi < connDocs.length; gdi++) {
+        var docRaw = afterIdToRaw[connDocs[gdi].id] || null;
+        var docAdded = addedMap[connDocs[gdi].id] || null;
+        docEntries.push({
+          node: connDocs[gdi],
+          change: docRaw,
+          added: docAdded ? { type: 'added', label: getNodeLabel(connDocs[gdi]), nodeType: connDocs[gdi].nodeType, node: connDocs[gdi] } : null,
+          label: getNodeLabel(connDocs[gdi]),
+        });
+      }
+
+      var hasAnyChange = !!aiChange || docEntries.some(function(d) { return d.change || d.added; });
+      if (hasAnyChange) {
+        if (aiChange) groupedAfterIds[aiN.id] = true;
+        for (var gmi = 0; gmi < docEntries.length; gmi++) {
+          if (docEntries[gmi].change && docEntries[gmi].change.after) groupedAfterIds[docEntries[gmi].change.after.id] = true;
+          if (docEntries[gmi].added) groupedAfterIds[connDocs[gmi].id] = true;
+        }
+        groups.push({
+          aiNode: aiN, aiLabel: getNodeLabel(aiN), aiChange: aiChange,
+          docs: docEntries,
+          totalChanges: (aiChange ? 1 : 0) + docEntries.filter(function(d) { return d.change || d.added; }).length,
+        });
+      }
+    }
+
+    // Ungrouped changes: changes not in any group
+    var ungroupedChanges = [];
+    for (var uci = 0; uci < allChanges.length; uci++) {
+      var ucAfter = allChanges[uci].after;
+      if (ucAfter && !groupedAfterIds[ucAfter.id]) ungroupedChanges.push(allChanges[uci]);
+    }
+    var ungroupedAdded = [];
+    for (var uai = 0; uai < result.added.length; uai++) {
+      if (!groupedAfterIds[result.added[uai].id]) ungroupedAdded.push(result.added[uai]);
+    }
+
+    var addedEntries = result.added.map(function(n) { return { type: 'added', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; });
+    var removedEntries = result.removed.map(function(n) { return { type: 'removed', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; });
+
     return {
       totalBefore: nodesA.length, totalAfter: nodesB.length,
       matched: result.matched.length,
-      added: result.added.map(function(n) { return { type: 'added', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; }),
-      removed: result.removed.map(function(n) { return { type: 'removed', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; }),
+      added: addedEntries,
+      removed: removedEntries,
       changed: dedupedChanges,
       flowConfig: flowConfigChanges,
+      groups: groups,
+      ungroupedChanges: ungroupedChanges,
+      ungroupedAdded: ungroupedAdded.map(function(n) { return { type: 'added', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; }),
       typesBefore: countByType(nodesA), typesAfter: countByType(nodesB),
       sameCount: result.matched.length - changedNodeCount,
     };
@@ -1055,6 +1203,221 @@
     }
 
     document.getElementById('type-breakdown').classList.add('visible');
+  }
+
+  // ─── Grouped View ─────────────────────────────────────
+  function renderGroupMember(entry) {
+    // entry = { change: rawChangeEntry, added: addedEntry, node, label }
+    var member = document.createElement('details');
+    member.className = 'group-member';
+    member.dataset.rendered = 'false';
+
+    var summary = document.createElement('summary');
+    var arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    setText(arrow, '\u25B8');
+    summary.appendChild(arrow);
+
+    var change = entry.change || entry.added;
+    var nt = change ? (change.nodeType || '?') : (entry.node ? entry.node.nodeType || '?' : '?');
+
+    var badge = document.createElement('span');
+    badge.className = 'type-badge ' + typeBadgeClass(nt);
+    setText(badge, nt);
+    summary.appendChild(badge);
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'card-name';
+    setText(nameEl, entry.label);
+    summary.appendChild(nameEl);
+
+    if (entry.added) {
+      var addLabel = document.createElement('span');
+      addLabel.className = 'added-label';
+      setText(addLabel, '+ NEW');
+      summary.appendChild(addLabel);
+    } else if (entry.change && entry.change.changes) {
+      var cats = entry.change.changes.map(function(c) { return c.field; }).join(', ');
+      var fieldEl = document.createElement('span');
+      fieldEl.className = 'card-field';
+      setText(fieldEl, cats);
+      summary.appendChild(fieldEl);
+
+      // Show char delta for text changes
+      var textCh = null;
+      for (var ti = 0; ti < entry.change.changes.length; ti++) {
+        var cat = entry.change.changes[ti].category;
+        if (cat === 'prompt' || cat === 'document') { textCh = entry.change.changes[ti]; break; }
+      }
+      if (textCh) {
+        var lenB = textCh.before.length;
+        var lenA = textCh.after.length;
+        var delta = lenA - lenB;
+        var charsEl = document.createElement('span');
+        charsEl.className = 'card-chars';
+        charsEl.appendChild(document.createTextNode(lenB.toLocaleString() + ' \u2192 ' + lenA.toLocaleString() + ' ('));
+        var deltaSpan = document.createElement('span');
+        deltaSpan.className = delta > 0 ? 'plus' : (delta < 0 ? 'minus' : '');
+        setText(deltaSpan, delta > 0 ? '+' + delta.toLocaleString() : delta.toLocaleString());
+        charsEl.appendChild(deltaSpan);
+        charsEl.appendChild(document.createTextNode(')'));
+        summary.appendChild(charsEl);
+      }
+    }
+
+    member.appendChild(summary);
+
+    var body = document.createElement('div');
+    body.className = 'member-body';
+    member.appendChild(body);
+
+    member.addEventListener('toggle', function() {
+      if (member.open && member.dataset.rendered === 'false') {
+        member.dataset.rendered = 'true';
+        if (entry.change) {
+          renderCardBody(body, entry.change);
+        } else if (entry.added) {
+          var pre = document.createElement('pre');
+          pre.className = 'node-data-preview';
+          var previewData = stripGuids(entry.added.node ? entry.added.node.data || {} : {});
+          setText(pre, JSON.stringify(previewData, null, 2).slice(0, 2000));
+          var fdDiv = document.createElement('div');
+          fdDiv.className = 'field-diff';
+          fdDiv.appendChild(pre);
+          body.appendChild(fdDiv);
+        }
+      }
+    });
+
+    return member;
+  }
+
+  function renderGroupCard(group) {
+    var card = document.createElement('details');
+    card.className = 'group-card';
+
+    var summary = document.createElement('summary');
+    var arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    setText(arrow, '\u25B8');
+    summary.appendChild(arrow);
+
+    var aiBadge = document.createElement('span');
+    aiBadge.className = 'type-badge ' + typeBadgeClass(group.aiNode.nodeType);
+    setText(aiBadge, group.aiNode.nodeType);
+    summary.appendChild(aiBadge);
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'group-name';
+    setText(nameEl, group.aiLabel);
+    summary.appendChild(nameEl);
+
+    var metaEl = document.createElement('span');
+    metaEl.className = 'group-meta';
+    var docTypes = group.docs.map(function(d) { return d.node.nodeType; });
+    setText(metaEl, docTypes.join(' + '));
+    summary.appendChild(metaEl);
+
+    var countEl = document.createElement('span');
+    countEl.className = 'group-count';
+    setText(countEl, group.totalChanges + ' change' + (group.totalChanges > 1 ? 's' : ''));
+    summary.appendChild(countEl);
+
+    card.appendChild(summary);
+
+    var body = document.createElement('div');
+    body.className = 'group-body';
+
+    // AI node member
+    if (group.aiChange) {
+      var aiConnector = document.createElement('div');
+      aiConnector.className = 'group-connector';
+      setText(aiConnector, 'AI Node');
+      body.appendChild(aiConnector);
+      body.appendChild(renderGroupMember({ change: group.aiChange, node: group.aiNode, label: group.aiLabel }));
+    }
+
+    // Connected doc/product members
+    var docConnector = document.createElement('div');
+    docConnector.className = 'group-connector';
+    setText(docConnector, 'Connected ' + (group.docs.length > 1 ? group.docs.length + ' nodes' : 'node'));
+    body.appendChild(docConnector);
+
+    for (var di = 0; di < group.docs.length; di++) {
+      var docEntry = group.docs[di];
+      if (docEntry.change || docEntry.added) {
+        body.appendChild(renderGroupMember(docEntry));
+      } else {
+        var unch = document.createElement('div');
+        unch.className = 'group-unchanged';
+        setText(unch, '[' + docEntry.node.nodeType + '] ' + docEntry.label + ' \u2014 unchanged');
+        body.appendChild(unch);
+      }
+    }
+
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderGroupedView(result) {
+    var container = document.getElementById('results-grouped');
+    container.textContent = '';
+
+    // Flow Config
+    if (result.flowConfig && result.flowConfig.length > 0) {
+      var fcHeader = document.createElement('div');
+      fcHeader.className = 'section-header';
+      setText(fcHeader, 'Flow Config (' + result.flowConfig.length + ' fields)');
+      container.appendChild(fcHeader);
+      container.appendChild(renderFlowConfigCard(result.flowConfig));
+    }
+
+    // Connection Groups
+    if (result.groups && result.groups.length > 0) {
+      var gHeader = document.createElement('div');
+      gHeader.className = 'section-header';
+      setText(gHeader, 'Connection Groups (' + result.groups.length + ' groups)');
+      container.appendChild(gHeader);
+
+      for (var gi = 0; gi < result.groups.length; gi++) {
+        container.appendChild(renderGroupCard(result.groups[gi]));
+      }
+    }
+
+    // Ungrouped changes
+    if (result.ungroupedChanges && result.ungroupedChanges.length > 0) {
+      var uHeader = document.createElement('div');
+      uHeader.className = 'section-header';
+      setText(uHeader, 'Ungrouped Changes (' + result.ungroupedChanges.length + ')');
+      container.appendChild(uHeader);
+      for (var ui = 0; ui < result.ungroupedChanges.length; ui++) {
+        container.appendChild(renderChangeCard(result.ungroupedChanges[ui]));
+      }
+    }
+
+    // Ungrouped added
+    if (result.ungroupedAdded && result.ungroupedAdded.length > 0) {
+      var uaHeader = document.createElement('div');
+      uaHeader.className = 'section-header';
+      setText(uaHeader, 'Added Nodes (' + result.ungroupedAdded.length + ')');
+      container.appendChild(uaHeader);
+      for (var uai = 0; uai < result.ungroupedAdded.length; uai++) {
+        container.appendChild(renderAddedRemovedCard(result.ungroupedAdded[uai]));
+      }
+    }
+
+    // Removed (always ungrouped)
+    if (result.removed.length > 0) {
+      var rHeader = document.createElement('div');
+      rHeader.className = 'section-header';
+      setText(rHeader, 'Removed Nodes (' + result.removed.length + ')');
+      container.appendChild(rHeader);
+      for (var ri = 0; ri < result.removed.length; ri++) {
+        container.appendChild(renderAddedRemovedCard(result.removed[ri]));
+      }
+    }
+
+    container.classList.add('visible');
   }
 
   function renderFlowConfigCard(flowChanges) {
@@ -1630,10 +1993,31 @@
     document.getElementById('btn-compare').disabled = !(configBefore && configAfter);
   }
 
+  // ─── View Toggle ─────────────────────────────────────
+  var currentView = 'category';
+
+  function switchView(view) {
+    currentView = view;
+    var catEl = document.getElementById('results');
+    var grpEl = document.getElementById('results-grouped');
+    var filterEl = document.getElementById('filter-tabs');
+    if (view === 'category') {
+      catEl.style.display = '';
+      grpEl.style.display = 'none';
+      filterEl.style.display = '';
+    } else {
+      catEl.style.display = 'none';
+      grpEl.style.display = '';
+      filterEl.style.display = 'none';
+    }
+  }
+
   // ─── Main ────────────────────────────────────────────
   function runCompare() {
     var resultsEl = document.getElementById('results');
+    var groupedEl = document.getElementById('results-grouped');
     resultsEl.textContent = '';
+    groupedEl.textContent = '';
     resultsEl.classList.add('visible');
 
     var loadDiv = document.createElement('div');
@@ -1648,6 +2032,7 @@
 
     document.getElementById('summary-bar').classList.remove('visible');
     document.getElementById('filter-tabs').classList.remove('visible');
+    document.getElementById('view-toggle').classList.remove('visible');
     document.getElementById('type-breakdown').classList.remove('visible');
 
     requestAnimationFrame(function() {
@@ -1657,7 +2042,10 @@
           renderSummary(lastResult);
           renderFilterTabs(lastResult);
           renderResults(lastResult);
+          renderGroupedView(lastResult);
           renderTypeBreakdown(lastResult);
+          document.getElementById('view-toggle').classList.add('visible');
+          switchView(currentView);
         } catch (err) {
           resultsEl.textContent = '';
           var errDiv = document.createElement('div');
@@ -1678,6 +2066,15 @@
   document.getElementById('btn-pdf').addEventListener('click', function() { if (lastResult) exportPDF(lastResult); });
   document.getElementById('btn-xlsx').addEventListener('click', function() { if (lastResult) exportExcel(lastResult); });
   document.getElementById('btn-copy').addEventListener('click', function() { if (lastResult) copySummary(lastResult); });
+
+  // View toggle
+  document.getElementById('view-toggle').addEventListener('click', function(e) {
+    if (!e.target.classList.contains('view-btn')) return;
+    var btns = document.querySelectorAll('.view-btn');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+    e.target.classList.add('active');
+    switchView(e.target.dataset.view);
+  });
 })();
 </script>
 </body>
