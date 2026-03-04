@@ -471,7 +471,17 @@
     for (var i = 0; i < fields.length; i++) {
       if (data[fields[i]]) return data[fields[i]];
     }
-    return data.customLabel || data.name || '';
+    if (data.customLabel || data.name) return data.customLabel || data.name;
+    // Fallback: extract label from document list or productGroupList
+    if (nt === 'documents' && Array.isArray(data.document) && data.document.length > 0) {
+      var first = data.document[0].replace(/_/g, ' ');
+      return data.document.length > 1 ? first + ' +' + (data.document.length - 1) : first;
+    }
+    if (nt === 'products' && Array.isArray(data.productGroupList) && data.productGroupList.length > 0) {
+      var pName = data.productGroupList[0].name || data.productGroupList[0].id || 'product';
+      return data.productGroupList.length > 1 ? pName + ' +' + (data.productGroupList.length - 1) : String(pName);
+    }
+    return '';
   }
 
   function getNodeLabel(node) {
