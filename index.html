@@ -1337,21 +1337,16 @@
       body.appendChild(renderGroupMember({ change: group.aiChange, node: group.aiNode, label: group.aiLabel }));
     }
 
-    // Connected doc/product members
-    var docConnector = document.createElement('div');
-    docConnector.className = 'group-connector';
-    setText(docConnector, 'Connected ' + (group.docs.length > 1 ? group.docs.length + ' nodes' : 'node'));
-    body.appendChild(docConnector);
+    // Connected doc/product members (only show changed ones)
+    var changedDocs = group.docs.filter(function(d) { return d.change || d.added; });
+    if (changedDocs.length > 0) {
+      var docConnector = document.createElement('div');
+      docConnector.className = 'group-connector';
+      setText(docConnector, 'Connected ' + (changedDocs.length > 1 ? changedDocs.length + ' nodes' : 'node'));
+      body.appendChild(docConnector);
 
-    for (var di = 0; di < group.docs.length; di++) {
-      var docEntry = group.docs[di];
-      if (docEntry.change || docEntry.added) {
-        body.appendChild(renderGroupMember(docEntry));
-      } else {
-        var unch = document.createElement('div');
-        unch.className = 'group-unchanged';
-        setText(unch, '[' + docEntry.node.nodeType + '] ' + docEntry.label + ' \u2014 unchanged');
-        body.appendChild(unch);
+      for (var di = 0; di < changedDocs.length; di++) {
+        body.appendChild(renderGroupMember(changedDocs[di]));
       }
     }
 
