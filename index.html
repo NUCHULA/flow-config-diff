@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/css/diff2html.min.css">
 <script src="https://cdn.jsdelivr.net/npm/diff@5.1.0/dist/diff.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/js/diff2html.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root {
     --bg: #0f172a; --bg2: #1e293b; --bg3: #334155;
@@ -244,6 +245,61 @@
     white-space: pre-wrap; color: var(--text2); font-size: 0.75rem;
     max-height: 300px; overflow: auto; font-family: var(--mono);
   }
+
+  /* Print-friendly PDF report */
+  @media print {
+    :root {
+      --bg: #fff; --bg2: #f8fafc; --bg3: #e2e8f0;
+      --text: #1e293b; --text2: #475569; --text3: #64748b;
+      --accent: #0369a1; --green: #15803d; --red: #b91c1c;
+      --yellow: #a16207; --border: #cbd5e1; --card: #fff;
+    }
+    body { background: #fff; color: #1e293b; font-size: 11pt; }
+    .header { background: #fff; border-bottom: 2px solid #0369a1; }
+    .header h1 span { color: #0369a1; }
+    .header .badge { background: #e0f2fe; color: #0369a1; }
+    .upload-row, .compare-row, .filter-tabs, .toast { display: none !important; }
+    .summary-actions { display: none !important; }
+    .container { max-width: 100%; padding: 0 1rem; }
+    .summary-bar { display: block !important; border: 1px solid #cbd5e1; }
+    .results { display: block !important; }
+    .change-card { break-inside: avoid; border: 1px solid #cbd5e1; }
+    .change-card summary { color: #1e293b; }
+    .change-card[open] { break-inside: auto; }
+    .type-breakdown { display: block !important; border: 1px solid #cbd5e1; }
+    .type-badge { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    .d2h-del, .d2h-ins, .d2h-del .d2h-code-line-ctn del, .d2h-ins .d2h-code-line-ctn ins {
+      print-color-adjust: exact; -webkit-print-color-adjust: exact;
+    }
+    .d2h-code-wrapper, .d2h-code-side-line { background: #fff !important; }
+    .d2h-code-linenumber, td.d2h-code-side-linenumber { background: #f8fafc !important; }
+    .d2h-del { background: #fef2f2 !important; }
+    .d2h-ins { background: #f0fdf4 !important; }
+    .d2h-del .d2h-code-line-ctn del { background: #fecaca !important; }
+    .d2h-ins .d2h-code-line-ctn ins { background: #bbf7d0 !important; }
+    .field-diff { background: #f8fafc; }
+    .field-diff .fd-field { color: #0369a1; }
+    .field-diff .fd-old { color: #b91c1c; }
+    .field-diff .fd-new { color: #15803d; }
+    .section-header { color: #475569; border-top: 1px solid #cbd5e1; }
+    .card-name { color: #1e293b; }
+    .card-field { color: #64748b; }
+    .card-chars .plus { color: #15803d; }
+    .card-chars .minus { color: #b91c1c; }
+    .added-label { color: #15803d; }
+    .removed-label { color: #b91c1c; }
+    .print-header { display: block !important; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #cbd5e1; }
+    .print-header .ph-title { font-size: 1.4rem; font-weight: 700; color: #0369a1; }
+    .print-header .ph-meta { font-size: 0.85rem; color: #475569; margin-top: 0.25rem; }
+    @page { margin: 1.5cm; size: A4 landscape; }
+  }
+  .print-header { display: none; }
+
+  /* Export button group */
+  .btn-sm.btn-pdf { background: #dc262622; color: #f87171; border-color: #dc262644; }
+  .btn-sm.btn-pdf:hover { background: #ef4444; color: #fff; border-color: #ef4444; }
+  .btn-sm.btn-xlsx { background: #16a34a22; color: #4ade80; border-color: #16a34a44; }
+  .btn-sm.btn-xlsx:hover { background: #22c55e; color: #fff; border-color: #22c55e; }
 </style>
 </head>
 <body>
@@ -254,6 +310,10 @@
 </div>
 
 <div class="container">
+  <div class="print-header" id="print-header">
+    <div class="ph-title">Flow Config Diff Report</div>
+    <div class="ph-meta" id="print-meta"></div>
+  </div>
   <div class="upload-row">
     <div class="upload-zone" id="zone-before" tabindex="0">
       <div class="label">Before (Pre-deploy)</div>
@@ -279,6 +339,8 @@
     <div class="summary-stats" id="summary-stats"></div>
     <div class="summary-actions">
       <button class="btn-sm" id="btn-export">Export Markdown</button>
+      <button class="btn-sm btn-pdf" id="btn-pdf">Export PDF</button>
+      <button class="btn-sm btn-xlsx" id="btn-xlsx">Export Excel</button>
       <button class="btn-sm" id="btn-copy">Copy Summary</button>
     </div>
   </div>
@@ -1349,6 +1411,175 @@
     navigator.clipboard.writeText(textParts.join('\n')).then(function() { toast('Copied to clipboard'); });
   }
 
+  // ─── PDF Export ────────────────────────────────────────
+  function exportPDF(result) {
+    // Expand all detail cards so they appear in print
+    var cards = document.querySelectorAll('.change-card');
+    var wasOpen = [];
+    for (var i = 0; i < cards.length; i++) {
+      wasOpen.push(cards[i].open);
+      if (!cards[i].open) {
+        cards[i].open = true;
+        // Trigger lazy render
+        if (cards[i].dataset.rendered === 'false') {
+          cards[i].dataset.rendered = 'true';
+          var body = cards[i].querySelector('.card-body');
+          if (body && cards[i]._change) renderCardBody(body, cards[i]._change);
+        }
+      }
+    }
+
+    // Set print header metadata
+    var meta = document.getElementById('print-meta');
+    var now = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    var changedCount = 0;
+    for (var c = 0; c < result.changed.length; c++) {
+      changedCount += result.changed[c].affectedNodes ? result.changed[c].affectedNodes.length : 1;
+    }
+    setText(meta,
+      'Generated: ' + now +
+      ' | Before: ' + (configBefore._filename || '?') + ' (' + result.totalBefore + ' nodes)' +
+      ' | After: ' + (configAfter._filename || '?') + ' (' + result.totalAfter + ' nodes)' +
+      ' | Changed: ' + changedCount + ' | Added: +' + result.added.length + ' | Removed: -' + result.removed.length
+    );
+
+    window.print();
+
+    // Restore card open states
+    for (var r = 0; r < cards.length; r++) {
+      cards[r].open = wasOpen[r];
+    }
+    toast('PDF dialog opened');
+  }
+
+  // ─── Excel Export ──────────────────────────────────────
+  function exportExcel(result) {
+    if (typeof XLSX === 'undefined') {
+      alert('SheetJS library not loaded. Check your internet connection.');
+      return;
+    }
+    var wb = XLSX.utils.book_new();
+    var changedCount = 0;
+    for (var i = 0; i < result.changed.length; i++) {
+      changedCount += result.changed[i].affectedNodes ? result.changed[i].affectedNodes.length : 1;
+    }
+
+    // Sheet 1: Summary
+    var summaryData = [
+      ['Flow Config Diff Report'],
+      ['Generated', new Date().toISOString().slice(0, 19).replace('T', ' ')],
+      ['Before', configBefore._filename || 'unknown', result.totalBefore + ' nodes'],
+      ['After', configAfter._filename || 'unknown', result.totalAfter + ' nodes'],
+      [],
+      ['Metric', 'Count'],
+      ['Total nodes (after)', result.totalAfter],
+      ['Added', '+' + result.added.length],
+      ['Removed', '-' + result.removed.length],
+      ['Changed', changedCount + ' (' + result.changed.length + ' patterns)'],
+      ['Unchanged', result.matched - changedCount],
+    ];
+    // Flow config
+    if (result.flowConfig && result.flowConfig.length > 0) {
+      summaryData.push([]);
+      summaryData.push(['Flow Config Changes']);
+      summaryData.push(['Field', 'Before', 'After']);
+      for (var fi = 0; fi < result.flowConfig.length; fi++) {
+        var fc = result.flowConfig[fi];
+        summaryData.push([fc.field, String(fc.before), String(fc.after)]);
+      }
+    }
+    var ws1 = XLSX.utils.aoa_to_sheet(summaryData);
+    ws1['!cols'] = [{ wch: 25 }, { wch: 50 }, { wch: 50 }];
+    XLSX.utils.book_append_sheet(wb, ws1, 'Summary');
+
+    // Sheet 2: Prompt Changes
+    var promptRows = [['#', 'Node', 'Field', 'Chars Before', 'Chars After', 'Delta', 'Affects']];
+    var promptChanges = result.changed.filter(function(c) {
+      return c.changes && c.changes.some(function(ch) { return ch.category === 'prompt'; });
+    });
+    for (var pi = 0; pi < promptChanges.length; pi++) {
+      var pc = null;
+      for (var pci = 0; pci < promptChanges[pi].changes.length; pci++) {
+        if (promptChanges[pi].changes[pci].category === 'prompt') { pc = promptChanges[pi].changes[pci]; break; }
+      }
+      var pAff = promptChanges[pi].affectedNodes ? promptChanges[pi].affectedNodes.length : 1;
+      promptRows.push([pi + 1, promptChanges[pi].label, pc.field, pc.before.length, pc.after.length, pc.after.length - pc.before.length, pAff]);
+    }
+    var ws2 = XLSX.utils.aoa_to_sheet(promptRows);
+    ws2['!cols'] = [{ wch: 5 }, { wch: 40 }, { wch: 30 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Prompt Changes');
+
+    // Sheet 3: Document Changes
+    var docRows = [['#', 'Node', 'Field', 'Chars Before', 'Chars After', 'Delta', 'Affects']];
+    var docChanges = result.changed.filter(function(c) {
+      return c.changes && c.changes.some(function(ch) { return ch.category === 'document'; });
+    });
+    for (var di = 0; di < docChanges.length; di++) {
+      var dc = null;
+      for (var dci = 0; dci < docChanges[di].changes.length; dci++) {
+        if (docChanges[di].changes[dci].category === 'document') { dc = docChanges[di].changes[dci]; break; }
+      }
+      var dAff = docChanges[di].affectedNodes ? docChanges[di].affectedNodes.length : 1;
+      docRows.push([di + 1, docChanges[di].label, dc.field, dc.before.length, dc.after.length, dc.after.length - dc.before.length, dAff]);
+    }
+    var ws3 = XLSX.utils.aoa_to_sheet(docRows);
+    ws3['!cols'] = [{ wch: 5 }, { wch: 40 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws3, 'Document Changes');
+
+    // Sheet 4: Config & Routing Changes
+    var cfgRows = [['#', 'Node', 'Category', 'Field', 'Before', 'After']];
+    var cfgIdx = 0;
+    for (var ci = 0; ci < result.changed.length; ci++) {
+      var entry = result.changed[ci];
+      if (!entry.changes) continue;
+      for (var cj = 0; cj < entry.changes.length; cj++) {
+        var ch = entry.changes[cj];
+        if (ch.category === 'prompt' || ch.category === 'document') continue;
+        cfgIdx++;
+        var bVal = typeof ch.before === 'object' ? JSON.stringify(ch.before) : String(ch.before == null ? '' : ch.before);
+        var aVal = typeof ch.after === 'object' ? JSON.stringify(ch.after) : String(ch.after == null ? '' : ch.after);
+        cfgRows.push([cfgIdx, entry.label, ch.category, ch.field, bVal, aVal]);
+      }
+    }
+    var ws4 = XLSX.utils.aoa_to_sheet(cfgRows);
+    ws4['!cols'] = [{ wch: 5 }, { wch: 40 }, { wch: 12 }, { wch: 25 }, { wch: 40 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, ws4, 'Config Changes');
+
+    // Sheet 5: Added & Removed
+    var arRows = [['Type', 'Action', 'Node Label', 'Node Type']];
+    for (var ai = 0; ai < result.added.length; ai++) {
+      arRows.push(['Added', '+', result.added[ai].label, result.added[ai].nodeType]);
+    }
+    for (var ri = 0; ri < result.removed.length; ri++) {
+      arRows.push(['Removed', '-', result.removed[ri].label, result.removed[ri].nodeType]);
+    }
+    var ws5 = XLSX.utils.aoa_to_sheet(arRows);
+    ws5['!cols'] = [{ wch: 10 }, { wch: 8 }, { wch: 50 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, ws5, 'Added & Removed');
+
+    // Sheet 6: Node Type Distribution
+    var typeRows = [['Type', 'Before', 'After', 'Delta']];
+    var allTypes = {};
+    var tbk = Object.keys(result.typesBefore);
+    var tak = Object.keys(result.typesAfter);
+    for (var tbi = 0; tbi < tbk.length; tbi++) allTypes[tbk[tbi]] = true;
+    for (var tai = 0; tai < tak.length; tai++) allTypes[tak[tai]] = true;
+    var sortedTypes = Object.keys(allTypes).sort();
+    for (var sti = 0; sti < sortedTypes.length; sti++) {
+      var tt = sortedTypes[sti];
+      var tb = result.typesBefore[tt] || 0;
+      var ta = result.typesAfter[tt] || 0;
+      typeRows.push([tt, tb, ta, ta - tb]);
+    }
+    var ws6 = XLSX.utils.aoa_to_sheet(typeRows);
+    ws6['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, ws6, 'Node Types');
+
+    var filename = 'flow-diff-' + new Date().toISOString().slice(0, 10) + '.xlsx';
+    XLSX.writeFile(wb, filename);
+    toast('Excel exported: ' + filename);
+  }
+
   // ─── Upload Handlers ─────────────────────────────────
   function setupUploadZone(zoneId, fileId, hintId, fnameId, countId, side) {
     var zone = document.getElementById(zoneId);
@@ -1444,6 +1675,8 @@
   setupUploadZone('zone-after', 'file-after', 'hint-after', 'fname-after', 'count-after', 'after');
   document.getElementById('btn-compare').addEventListener('click', runCompare);
   document.getElementById('btn-export').addEventListener('click', function() { if (lastResult) exportMarkdown(lastResult); });
+  document.getElementById('btn-pdf').addEventListener('click', function() { if (lastResult) exportPDF(lastResult); });
+  document.getElementById('btn-xlsx').addEventListener('click', function() { if (lastResult) exportExcel(lastResult); });
   document.getElementById('btn-copy').addEventListener('click', function() { if (lastResult) copySummary(lastResult); });
 })();
 </script>
