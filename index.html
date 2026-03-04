@@ -137,6 +137,7 @@
   .type-condition { background: #f9731622; color: #fb923c; border: 1px solid #f9731644; }
   .type-switch { background: #84cc1622; color: #a3e635; border: 1px solid #84cc1644; }
   .type-intentGroup { background: #eab30822; color: #fbbf24; border: 1px solid #eab30844; }
+  .type-flowConfig { background: #06b6d422; color: #22d3ee; border: 1px solid #06b6d444; }
   .type-default { background: #64748b22; color: #94a3b8; border: 1px solid #64748b44; }
   .card-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card-field { font-family: var(--mono); font-size: 0.75rem; color: var(--text3); flex-shrink: 0; }
@@ -311,6 +312,10 @@
     model: 'systemPrompt',
     queryRewriter: 'queryRewriterSystemPrompt',
     intentAI: 'intentaiSystemPrompt',
+  };
+
+  var DOCUMENT_FIELDS = {
+    documents: 'document',
   };
 
   var NAME_FIELDS = {
@@ -501,6 +506,17 @@
       }
     }
 
+    var docField = DOCUMENT_FIELDS[nt];
+    if (docField) {
+      var dBefore = (before.data || {})[docField] || '';
+      var dAfter = (after.data || {})[docField] || '';
+      if (typeof dBefore === 'object') dBefore = JSON.stringify(dBefore, null, 2);
+      if (typeof dAfter === 'object') dAfter = JSON.stringify(dAfter, null, 2);
+      if (dBefore !== dAfter) {
+        changes.push({ category: 'document', field: docField, before: dBefore, after: dAfter });
+      }
+    }
+
     var allKeys = {};
     var bKeys = Object.keys(dataBefore);
     var aKeys = Object.keys(dataAfter);
@@ -511,6 +527,7 @@
     for (var ki = 0; ki < sortedKeys.length; ki++) {
       var key = sortedKeys[ki];
       if (key === promptField) continue;
+      if (key === docField) continue;
       var vb = dataBefore[key];
       var va = dataAfter[key];
       if (JSON.stringify(vb) === JSON.stringify(va)) continue;
@@ -540,7 +557,7 @@
       var entry = allChanges[i];
       var promptChange = null;
       for (var c = 0; c < entry.changes.length; c++) {
-        if (entry.changes[c].category === 'prompt') { promptChange = entry.changes[c]; break; }
+        if (entry.changes[c].category === 'prompt' || entry.changes[c].category === 'document') { promptChange = entry.changes[c]; break; }
       }
 
       if (!promptChange) {
@@ -594,12 +611,37 @@
       changedNodeCount += dedupedChanges[d].affectedNodes ? dedupedChanges[d].affectedNodes.length : 1;
     }
 
+    // Top-level flow config diff
+    var flowConfigChanges = [];
+    if ((cfgA.name || '') !== (cfgB.name || '')) {
+      flowConfigChanges.push({ field: 'name', before: cfgA.name || '(none)', after: cfgB.name || '(none)' });
+    }
+    var metaA = cfgA.metadata || {};
+    var metaB = cfgB.metadata || {};
+    var metaKeys = {};
+    var mak = Object.keys(metaA); var mbk = Object.keys(metaB);
+    for (var mi = 0; mi < mak.length; mi++) metaKeys[mak[mi]] = true;
+    for (var mj = 0; mj < mbk.length; mj++) metaKeys[mbk[mj]] = true;
+    var sortedMeta = Object.keys(metaKeys).sort();
+    for (var mk = 0; mk < sortedMeta.length; mk++) {
+      var mkey = sortedMeta[mk];
+      var mvA = metaA[mkey]; var mvB = metaB[mkey];
+      if (JSON.stringify(mvA) !== JSON.stringify(mvB)) {
+        flowConfigChanges.push({
+          field: 'metadata.' + mkey,
+          before: mvA == null ? '(none)' : String(mvA),
+          after: mvB == null ? '(none)' : String(mvB),
+        });
+      }
+    }
+
     return {
       totalBefore: nodesA.length, totalAfter: nodesB.length,
       matched: result.matched.length,
       added: result.added.map(function(n) { return { type: 'added', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; }),
       removed: result.removed.map(function(n) { return { type: 'removed', label: getNodeLabel(n), nodeType: n.nodeType, node: n }; }),
       changed: dedupedChanges,
+      flowConfig: flowConfigChanges,
       typesBefore: countByType(nodesA), typesAfter: countByType(nodesB),
       sameCount: result.matched.length - changedNodeCount,
     };
@@ -641,7 +683,7 @@
   function renderFilterTabs(result) {
     var tabsEl = document.getElementById('filter-tabs');
     tabsEl.textContent = '';
-    var counts = { all: 0, prompt: 0, routing: 0, config: 0, addremove: 0 };
+    var counts = { all: 0, prompt: 0, document: 0, routing: 0, config: 0, flowconfig: 0, addremove: 0 };
 
     for (var i = 0; i < result.changed.length; i++) {
       var c = result.changed[i];
@@ -650,15 +692,19 @@
         for (var j = 0; j < c.changes.length; j++) hasCats[c.changes[j].category] = true;
       }
       if (hasCats.prompt) counts.prompt += (c.affectedNodes ? c.affectedNodes.length : 1);
+      if (hasCats.document) counts.document += (c.affectedNodes ? c.affectedNodes.length : 1);
       if (hasCats.routing) counts.routing++;
       if (hasCats.config) counts.config++;
     }
+    counts.flowconfig = result.flowConfig ? result.flowConfig.length : 0;
     counts.addremove = result.added.length + result.removed.length;
-    counts.all = result.changed.length + (counts.addremove > 0 ? 1 : 0);
+    counts.all = result.changed.length + (counts.addremove > 0 ? 1 : 0) + (counts.flowconfig > 0 ? 1 : 0);
 
     var tabs = [
       { id: 'all', label: 'All (' + counts.all + ')' },
+      { id: 'flowconfig', label: 'Flow Config (' + counts.flowconfig + ')' },
       { id: 'prompt', label: 'Prompt (' + counts.prompt + ')' },
+      { id: 'document', label: 'Document (' + counts.document + ')' },
       { id: 'routing', label: 'Routing (' + counts.routing + ')' },
       { id: 'config', label: 'Config (' + counts.config + ')' },
       { id: 'addremove', label: 'Added/Removed (' + counts.addremove + ')' },
@@ -688,6 +734,8 @@
       var cat = cards[i].dataset.category || '';
       if (filter === 'all') cards[i].style.display = '';
       else if (filter === 'addremove') cards[i].style.display = (cat === 'added' || cat === 'removed') ? '' : 'none';
+      else if (filter === 'flowconfig') cards[i].style.display = cat === 'flowconfig' ? '' : 'none';
+      else if (filter === 'document') cards[i].style.display = cat.indexOf('document') >= 0 ? '' : 'none';
       else cards[i].style.display = cat.indexOf(filter) >= 0 ? '' : 'none';
     }
     var headers = document.querySelectorAll('.section-header');
@@ -695,6 +743,8 @@
       var hcat = headers[h].dataset.category || '';
       if (filter === 'all') headers[h].style.display = '';
       else if (filter === 'addremove') headers[h].style.display = (hcat === 'added' || hcat === 'removed') ? '' : 'none';
+      else if (filter === 'flowconfig') headers[h].style.display = hcat === 'flowconfig' ? '' : 'none';
+      else if (filter === 'document') headers[h].style.display = hcat.indexOf('document') >= 0 ? '' : 'none';
       else headers[h].style.display = hcat.indexOf(filter) >= 0 ? '' : 'none';
     }
   }
@@ -715,7 +765,7 @@
     var promptChange = null;
     if (change.changes) {
       for (var i = 0; i < change.changes.length; i++) {
-        if (change.changes[i].category === 'prompt') { promptChange = change.changes[i]; break; }
+        if (change.changes[i].category === 'prompt' || change.changes[i].category === 'document') { promptChange = change.changes[i]; break; }
       }
     }
     var nt = change.nodeType || '?';
@@ -796,11 +846,11 @@
       body.appendChild(affDiv);
     }
 
-    // Prompt diff (side-by-side via diff2html)
+    // Prompt/Document diff (side-by-side via diff2html)
     var promptChange = null;
     if (change.changes) {
       for (var i = 0; i < change.changes.length; i++) {
-        if (change.changes[i].category === 'prompt') { promptChange = change.changes[i]; break; }
+        if (change.changes[i].category === 'prompt' || change.changes[i].category === 'document') { promptChange = change.changes[i]; break; }
       }
     }
 
@@ -820,7 +870,7 @@
     var otherChanges = [];
     if (change.changes) {
       for (var j = 0; j < change.changes.length; j++) {
-        if (change.changes[j].category !== 'prompt') otherChanges.push(change.changes[j]);
+        if (change.changes[j].category !== 'prompt' && change.changes[j].category !== 'document') otherChanges.push(change.changes[j]);
       }
     }
 
@@ -945,21 +995,94 @@
     document.getElementById('type-breakdown').classList.add('visible');
   }
 
+  function renderFlowConfigCard(flowChanges) {
+    var card = document.createElement('details');
+    card.className = 'change-card';
+    card.dataset.category = 'flowconfig';
+    card.open = true;
+
+    var summary = document.createElement('summary');
+    var arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    setText(arrow, '\u25B8');
+    summary.appendChild(arrow);
+
+    var badge = document.createElement('span');
+    badge.className = 'type-badge type-flowConfig';
+    setText(badge, 'flow');
+    summary.appendChild(badge);
+
+    var nameEl = document.createElement('span');
+    nameEl.className = 'card-name';
+    setText(nameEl, 'Flow-level Config');
+    summary.appendChild(nameEl);
+
+    var countEl = document.createElement('span');
+    countEl.className = 'card-field';
+    setText(countEl, flowChanges.length + ' field' + (flowChanges.length > 1 ? 's' : ''));
+    summary.appendChild(countEl);
+
+    card.appendChild(summary);
+
+    var body = document.createElement('div');
+    body.className = 'card-body';
+    var fdDiv = document.createElement('div');
+    fdDiv.className = 'field-diff';
+    for (var i = 0; i < flowChanges.length; i++) {
+      var fc = flowChanges[i];
+      var row = document.createElement('div');
+      row.className = 'fd-row';
+      var fieldSpan = document.createElement('span');
+      fieldSpan.className = 'fd-field';
+      setText(fieldSpan, fc.field);
+      row.appendChild(fieldSpan);
+      row.appendChild(document.createTextNode(': '));
+      var oldSpan = document.createElement('span');
+      oldSpan.className = 'fd-old';
+      setText(oldSpan, truncate(String(fc.before), 120));
+      row.appendChild(oldSpan);
+      row.appendChild(document.createTextNode(' \u2192 '));
+      var newSpan = document.createElement('span');
+      newSpan.className = 'fd-new';
+      setText(newSpan, truncate(String(fc.after), 120));
+      row.appendChild(newSpan);
+      fdDiv.appendChild(row);
+    }
+    body.appendChild(fdDiv);
+    card.appendChild(body);
+    return card;
+  }
+
   function renderResults(result) {
     var container = document.getElementById('results');
     container.textContent = '';
 
+    // Flow Config (top-level)
+    if (result.flowConfig && result.flowConfig.length > 0) {
+      var fcHeader = document.createElement('div');
+      fcHeader.className = 'section-header';
+      fcHeader.dataset.category = 'flowconfig';
+      setText(fcHeader, 'Flow Config (' + result.flowConfig.length + ' fields)');
+      container.appendChild(fcHeader);
+      container.appendChild(renderFlowConfigCard(result.flowConfig));
+    }
+
+    // Separate into prompt, document, and other changes
     var promptChanges = [];
+    var documentChanges = [];
     var otherChanges = [];
     for (var i = 0; i < result.changed.length; i++) {
       var c = result.changed[i];
       var hasPrompt = false;
+      var hasDocument = false;
       if (c.changes) {
         for (var j = 0; j < c.changes.length; j++) {
-          if (c.changes[j].category === 'prompt') { hasPrompt = true; break; }
+          if (c.changes[j].category === 'prompt') hasPrompt = true;
+          if (c.changes[j].category === 'document') hasDocument = true;
         }
       }
       if (hasPrompt) promptChanges.push(c);
+      else if (hasDocument) documentChanges.push(c);
       else otherChanges.push(c);
     }
 
@@ -970,6 +1093,15 @@
       setText(header, 'Prompt Changes (' + promptChanges.length + ' patterns)');
       container.appendChild(header);
       for (var p = 0; p < promptChanges.length; p++) container.appendChild(renderChangeCard(promptChanges[p]));
+    }
+
+    if (documentChanges.length > 0) {
+      var docHeader = document.createElement('div');
+      docHeader.className = 'section-header';
+      docHeader.dataset.category = 'document';
+      setText(docHeader, 'Document Changes (' + documentChanges.length + ' patterns)');
+      container.appendChild(docHeader);
+      for (var dc = 0; dc < documentChanges.length; dc++) container.appendChild(renderChangeCard(documentChanges[dc]));
     }
 
     if (otherChanges.length > 0) {
@@ -1027,8 +1159,24 @@
     lines.push('| Unchanged | ' + sameCount + ' |');
     lines.push('');
 
+    if (result.flowConfig && result.flowConfig.length > 0) {
+      lines.push('## Flow Config');
+      lines.push('');
+      lines.push('| Field | Before | After |');
+      lines.push('|-------|--------|-------|');
+      for (var fi = 0; fi < result.flowConfig.length; fi++) {
+        var fc = result.flowConfig[fi];
+        lines.push('| ' + fc.field + ' | ' + String(fc.before) + ' | ' + String(fc.after) + ' |');
+      }
+      lines.push('');
+    }
+
     var promptChanges = result.changed.filter(function(c) {
       return c.changes && c.changes.some(function(ch) { return ch.category === 'prompt'; });
+    });
+
+    var documentChanges = result.changed.filter(function(c) {
+      return c.changes && c.changes.some(function(ch) { return ch.category === 'document'; });
     });
 
     if (promptChanges.length > 0) {
@@ -1047,6 +1195,26 @@
         var deltaStr = delta > 0 ? '+' + delta.toLocaleString() : delta.toLocaleString();
         var affects = promptChanges[pi].affectedNodes ? promptChanges[pi].affectedNodes.length : 1;
         lines.push('| ' + (pi + 1) + ' | ' + promptChanges[pi].label + ' | ' + pc.field + ' | ' + lenB.toLocaleString() + '\u2192' + lenA.toLocaleString() + ' | ' + deltaStr + ' | ' + affects + ' |');
+      }
+      lines.push('');
+    }
+
+    if (documentChanges.length > 0) {
+      lines.push('## Document Changes');
+      lines.push('');
+      lines.push('| # | Node | Field | Chars | Delta | Affects |');
+      lines.push('|---|------|-------|-------|-------|---------|');
+      for (var dci = 0; dci < documentChanges.length; dci++) {
+        var dcx = null;
+        for (var dcj = 0; dcj < documentChanges[dci].changes.length; dcj++) {
+          if (documentChanges[dci].changes[dcj].category === 'document') { dcx = documentChanges[dci].changes[dcj]; break; }
+        }
+        var dLenB = dcx.before.length;
+        var dLenA = dcx.after.length;
+        var dDelta = dLenA - dLenB;
+        var dDeltaStr = dDelta > 0 ? '+' + dDelta.toLocaleString() : dDelta.toLocaleString();
+        var dAffects = documentChanges[dci].affectedNodes ? documentChanges[dci].affectedNodes.length : 1;
+        lines.push('| ' + (dci + 1) + ' | ' + documentChanges[dci].label + ' | ' + dcx.field + ' | ' + dLenB.toLocaleString() + '\u2192' + dLenA.toLocaleString() + ' | ' + dDeltaStr + ' | ' + dAffects + ' |');
       }
       lines.push('');
     }
@@ -1110,6 +1278,32 @@
       }
     }
 
+    if (documentChanges.length > 0) {
+      lines.push('---');
+      lines.push('');
+      lines.push('## Detailed Document Diffs');
+      lines.push('');
+      for (var ddi = 0; ddi < documentChanges.length; ddi++) {
+        var ddpc = null;
+        for (var ddci = 0; ddci < documentChanges[ddi].changes.length; ddci++) {
+          if (documentChanges[ddi].changes[ddci].category === 'document') { ddpc = documentChanges[ddi].changes[ddci]; break; }
+        }
+        lines.push('### ' + (ddi + 1) + '. ' + documentChanges[ddi].label + ' \u2014 ' + ddpc.field);
+        lines.push('');
+        if (documentChanges[ddi].affectedNodes && documentChanges[ddi].affectedNodes.length > 1) {
+          lines.push('> Affects ' + documentChanges[ddi].affectedNodes.length + ' nodes: ' + documentChanges[ddi].affectedNodes.join(', '));
+          lines.push('');
+        }
+        lines.push('**' + ddpc.before.length.toLocaleString() + '** \u2192 **' + ddpc.after.length.toLocaleString() + '** chars');
+        lines.push('');
+        var dpatch = Diff.createPatch(ddpc.field, ddpc.before, ddpc.after, 'before', 'after');
+        lines.push('```diff');
+        lines.push(dpatch);
+        lines.push('```');
+        lines.push('');
+      }
+    }
+
     return lines.join('\n');
   }
 
@@ -1136,8 +1330,11 @@
     var textParts = [
       'Flow Config Diff: ' + result.totalBefore + ' \u2192 ' + result.totalAfter + ' nodes',
       'Added: +' + result.added.length + ' | Removed: -' + result.removed.length + ' | Changed: ' + changedCount + ' (' + result.changed.length + ' patterns) | Same: ' + sameCount,
-      '',
     ];
+    if (result.flowConfig && result.flowConfig.length > 0) {
+      textParts.push('Flow Config: ' + result.flowConfig.map(function(f) { return f.field + ': ' + f.before + ' \u2192 ' + f.after; }).join(', '));
+    }
+    textParts.push('');
     var promptChanges = result.changed.filter(function(c) {
       return c.changes && c.changes.some(function(ch) { return ch.category === 'prompt'; });
     });
