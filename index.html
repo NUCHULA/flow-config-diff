@@ -600,6 +600,11 @@
           break;
         }
 
+        // Skip position matching when both nodes have different non-empty names.
+        // This prevents a Prod-only node from "stealing" a UAT node that has
+        // a rightful name-match partner later in the array.
+        if (nameBefore && nameAfter && nameBefore !== nameAfter) continue;
+
         var dist = posDistance(nb.position || {}, na.position || {});
         if (dist <= POSITION_TOLERANCE) {
           var score = POSITION_TOLERANCE - dist;
